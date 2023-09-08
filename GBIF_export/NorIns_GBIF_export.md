@@ -71,10 +71,10 @@ dataset’s webpage at GBIF. The citation can be fetched programmatically
 this way.
 
 ``` r
-datasetID <- "19fe96b0-0cf3-4a2e-90a5-7c1c19ac94ee" ##From the webpage URL
+dataset_id <- "19fe96b0-0cf3-4a2e-90a5-7c1c19ac94ee" ##From the webpage URL
 # Suggested citation: Take the citation as from downloaded from GBIF website, replace "via GBIF.org" by endpoint url. 
 tmp <- tempfile()
-download.file(paste0("http://api.gbif.org/v1/dataset/",datasetID,"/document"),tmp) # get medatadata from gbif api
+download.file(paste0("http://api.gbif.org/v1/dataset/",dataset_id,"/document"),tmp) # get medatadata from gbif api
 meta <- read_xml(tmp) %>% as_list() # create list from xml schema
 gbif_citation <- meta$eml$additionalMetadata$metadata$gbif$citation[[1]] # extract citation
 ```
@@ -92,8 +92,8 @@ at the bottom of the webpage for the dataset. This can also be found
 programatically as shown here.
 
 ``` r
-datasetURL <-  paste0("http://api.gbif.org/v1/dataset/",datasetID,"/endpoint")
-dataset <- RJSONIO::fromJSON(datasetURL)
+dataset_url <-  paste0("http://api.gbif.org/v1/dataset/",dataset_id,"/endpoint")
+dataset <- RJSONIO::fromJSON(dataset_url)
 endpoint_url <- dataset[[1]]$url # extracting URL from API call result
 ```
 
@@ -107,7 +107,7 @@ With the endpoint, we can download the data in a zipped format.
 ``` r
 # Download from dwc-a from IPT  putting into data folder
 system("mkdir -p GBIF_data")
-download.file(endpoint_url, destfile="GBIF_data/gbif_download.zip", mode="wb")
+download.file(endpoint_url, destfile = "GBIF_data/gbif_download.zip", mode="wb")
 ```
 
 We unzip it in the same folder.
@@ -122,37 +122,111 @@ unzip("GBIF_data/gbif_download.zip",
 The data is a simple tab delimited text file.
 
 ``` r
-eventRaw <- read_delim("GBIF_data/event.txt", 
+event_raw <- read_delim("GBIF_data/event.txt", 
                        delim = "\t",
-                       locale = locale(encoding = "UTF-8"))
+                       locale = locale(encoding = "UTF-8"),
+                       progress = FALSE,
+                       show_col_types = FALSE)
 ```
-
-    Rows: 4287 Columns: 26
-    ── Column specification ────────────────────────────────────────────────────────
-    Delimiter: "\t"
-    chr  (21): id, type, ownerInstitutionCode, dynamicProperties, eventID, paren...
-    dbl   (4): sampleSizeValue, decimalLatitude, decimalLongitude, coordinateUnc...
-    dttm  (1): modified
-
-    ℹ Use `spec()` to retrieve the full column specification for this data.
-    ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
 
 The occurrence data follows the same procedure.
 
 ``` r
-occurrenceRaw <- read_delim("GBIF_data/occurrence.txt", 
+occurrence_raw <- read_delim("GBIF_data/occurrence.txt", 
                        delim = "\t",
-                       locale = locale(encoding = "UTF-8")
+                       locale = locale(encoding = "UTF-8"),
+                       progress = FALSE,
+                       show_col_types = FALSE
                        )
 ```
 
-    Rows: 327417 Columns: 20
-    ── Column specification ────────────────────────────────────────────────────────
-    Delimiter: "\t"
-    chr  (16): id, basisOfRecord, occurrenceID, organismQuantityType, occurrence...
-    dbl   (1): organismQuantity
-    lgl   (2): sex, lifeStage
-    dttm  (1): modified
+# Extracting the data from the GBIF raw format
 
-    ℹ Use `spec()` to retrieve the full column specification for this data.
-    ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
+We next split out the separate levels from the combined event table.
+
+``` r
+identifications_raw <- event_raw %>% 
+  filter(samplingProtocol == "Level_1")
+
+sampling_trap_raw <- event_raw %>% 
+  filter(samplingProtocol == "Level_2")
+
+locality_sampling_raw <- event_raw %>% 
+  filter(samplingProtocol == "Level_3")
+
+year_locality_raw <- event_raw %>% 
+  filter(samplingProtocol == "Level_4")
+```
+
+## Extract the data that didn’t fit into the GBIF standard
+
+In all levels, we have information that don’t fit into the GBIF data
+format. These are bundled together in to a JSON-string in a GBIF column
+named “dynamicProperties”. We need to spread this content into separate
+columns.
+
+``` r
+identifications_raw %>% 
+  select(dynamicProperties) %>% 
+  head(1)
+```
+
+    # A tibble: 1 × 1
+      dynamicProperties                                                             
+      <chr>                                                                         
+    1 "{\"id\":\"cc5c4506-d23c-4db4-be1c-cc1318c63ec5\",\"identification_name\":\"m…
+
+Here, we split out the json string (dynamicProperties) into a separate
+table, and join it back to the original data afterwards. I tried various
+json-packages earlier with limited success, but this works and should be
+stable.
+
+``` r
+identifications <- identifications_raw %>% 
+  #collect() %>% 
+  select(-dynamicProperties) %>% 
+  mutate(`document.id` = 1:nrow(.))
+
+tempDynamic <- identifications_raw %>% 
+  #head() %>% 
+  select(dyn = dynamicProperties) %>% 
+  #collect() %>% 
+  unlist() %>% 
+  spread_all()  %>% 
+  as_tibble()
+
+
+identifications <- identifications %>% 
+  left_join(tempDynamic,
+            by = c("document.id" = "document.id",
+                   "id" = "id"))
+```
+
+The new columns contain an identification method name, optional
+identification comment, read_abundance (number of DNA-copies),
+extraction date, extraction-kit, and optional extraction comment. A
+sample of the extracted data:
+
+``` r
+identifications %>% 
+  select(identification_name,
+         identification_comment,
+         read_abundance,
+         ekstraksjonsdato,
+         ekstraksjonskit,
+         ekstraksjonskommentar) %>% 
+  head()
+```
+
+    # A tibble: 6 × 6
+      identification_name   identification_comment read_abundance ekstraksjonsdato
+      <chr>                 <lgl>                           <dbl> <lgl>           
+    1 metabarcoding_novaseq NA                             556742 NA              
+    2 metabarcoding_novaseq NA                             390776 NA              
+    3 metabarcoding_novaseq NA                             249041 NA              
+    4 metabarcoding_myseq   NA                              31057 NA              
+    5 metabarcoding_myseq   NA                              83008 NA              
+    6 metabarcoding_novaseq NA                            3557357 NA              
+    # ℹ 2 more variables: ekstraksjonskit <lgl>, ekstraksjonskommentar <lgl>
+
+## Continue with other levels…
