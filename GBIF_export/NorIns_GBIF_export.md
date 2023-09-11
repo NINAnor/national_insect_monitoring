@@ -750,7 +750,10 @@ spec_agg <- spec_join %>%
     `summarise()` has grouped output by 'year', 'region_name', 'locality'. You can
     override using the `.groups` argument.
 
-And create a basic plot.
+And create a basic plot of the total number of species found, divided by
+habitat type, region, and year. Note that we only export species names
+with identification confidence = “HIGH” to GBIF. See the reports for
+documentation of identification classifications.
 
 ``` r
 ggplot(aes(y = no_spec,
@@ -760,6 +763,8 @@ ggplot(aes(y = no_spec,
   geom_bar(stat = "sum",
            show_guide = FALSE) +
   scale_fill_discrete(name = "Habitat type") +
+  ylab("No. species") +
+  xlab("Habitat type") +
   facet_wrap(vars(region_name, year),
              shrink = TRUE,
              drop = TRUE)
@@ -769,3 +774,5 @@ ggplot(aes(y = no_spec,
     ℹ Please use the `show.legend` argument instead.
 
 ![](figure/unnamed-chunk-31-1.png)
+
+This concludes the tour of the basic wrangling of this dataset.

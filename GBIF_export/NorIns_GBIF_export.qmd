@@ -587,7 +587,7 @@ spec_agg <- spec_join %>%
            habitat_type) %>% 
   summarize(no_spec = n_distinct(scientific_name))
 ```
-And create a basic plot.
+And create a basic plot of the total number of species found, divided by habitat type, region, and year. Note that we only export species names with identification confidence = "HIGH" to GBIF. See the reports for documentation of identification classifications.
 
 ```{r}
 ggplot(aes(y = no_spec,
@@ -597,11 +597,14 @@ ggplot(aes(y = no_spec,
   geom_bar(stat = "sum",
            show_guide = FALSE) +
   scale_fill_discrete(name = "Habitat type") +
+  ylab("No. species") +
+  xlab("Habitat type") +
   facet_wrap(vars(region_name, year),
              shrink = TRUE,
              drop = TRUE)
 
 ```
 
+This concludes the tour of the basic wrangling of this dataset.
 
 
