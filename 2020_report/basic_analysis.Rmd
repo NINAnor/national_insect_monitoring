@@ -1,0 +1,1480 @@
+---
+title: "Insect survey 2020, basic analysis"
+author: "Jens Å"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  NinaR::jensAnalysis:
+    highlight: tango
+    fig_caption: yes
+    toc: yes
+---
+
+Intro
+========
+This script performs some basic analyses and produces figures for a report on the activity of the first year of a Norwegian insect monitoring program, in 2020. The project is financed by the Environmental Agency in Norway, and is the first continuous, general insect monitoring program in Norway. We employ malaise and window traps in semi-natural and forest locations. The monitoring is currently delimited to Eastern Norway. 
+Further information about the project can be found here:
+
+https://www.nina.no/V%C3%A5re-fagomr%C3%A5der/Milj%C3%B8overv%C3%A5king-p%C3%A5-land/Overv%C3%A5king-av-insekter
+
+This is a live document that contains code in a pretty raw format. It's not intended to be reproducible at this point. A separate document holds code relating to the database, where the data is stored.
+
+
+
+
+```{r, include = F}
+#Some common packages, loading rmarkdown doesn't like the messages from tidyverse, so we don't include this in the document'
+require(tidyverse)
+require(DBI)
+require(RPostgres)
+require(dbplyr)
+require(ggplot2)
+require(xtable)
+require(NinaR)
+require(gridExtra)
+require(hms)
+require(ggeffects)
+require(lme4)
+require(ggrepel)
+```
+
+
+```{r setup, include=FALSE}
+#This is optional
+#I choose the 'styler' package for tidying the code to preserve indentations
+#I set the cutoff for code tidying to 60, but this doesn't currently work with styler.
+#Set tidy = True to get the knitr default
+#I want all figures as png and pdf in high quality in a subfolder called figure 
+
+knitr::opts_chunk$set(echo = TRUE, 
+                      tidy = "styler",
+                      dev = c("png", "pdf"),
+                      dpi = 600,
+                      fig.path = "figure/",
+                      tidy.opts = list(width.cutoff = 60)
+                      )
+
+options(xtable.comment = F, 
+        xtable.include.rownames = F, 
+        nina.logo.y.pos = 0.15)
+palette(ninaPalette())
+```
+
+Data import and cleaning
+==============
+At this point I get the raw data from Marie, which requires some cleaning. In the future, we'll put this all in a database, and separate out the cleaning and database import in a separate script. This will then start with instructions on how to access the raw data from public sources, so that it is reproducible. 
+
+Mind that this is still draft.
+
+```{r, include = F, eval = T}
+source("~/.rpgpass")
+#This connects to the gisdatabase with a DBI connection named `con`.
+#Use for example dbGetQuery(con, "SELECT * FROM ....") to query the database
+con <- dbConnect(Postgres(),
+          host = "ninradardata01.nina.no", 
+                 dbname = "insect_monitoring",
+                 user = username,
+                 password = password
+)
+rm(username, password)
+```
+
+Fetch catch data from database
+=======
+
+```{r}
+sample_metadata <- tbl(con,
+                       in_schema("catch_data", "sample_metadata"))
+
+metabarcoding <- tbl(con,
+                     in_schema("catch_data", "metabarcoding"))
+
+dat <- metabarcoding %>% 
+  left_join(sample_metadata,
+            by = c("sample" = "sample")) %>% 
+  collect()
+```
+
+Set factor levels
+
+```{r}
+dat <- dat %>%
+  mutate(location = factor(location, levels = c(paste0("Semi-nat_", 1:10), paste0("Skog_", 1:10), "Nerlandsoeya")),
+         trap_type = ifelse(grepl("MF", trap), "Malaise", "Vindu"),
+         habitat_type = ifelse(grepl("Skog", location), "Skog", "SN_Gressmark"),
+         liquid = ifelse(grepl("etoh85", liquid), "Ethanol", "PropGl_Ethanol"),
+         weeks_sampled = ifelse(grepl("1", trap) | grepl("3", trap), 2, 4)
+         )
+```
+
+Write a species list for the entomologists
+--------
+
+```{r}
+dat %>% 
+  select(kingdom,
+         phylum,
+         class,
+         order,
+         family,
+         genus,
+         species) %>% 
+  distinct() %>% 
+  arrange(kingdom,
+         phylum,
+         class,
+         order,
+         family,
+         genus,
+         species) %>% 
+  write_excel_csv(file = "out/species_list_2020-11-02.csv")
+```
+
+
+
+
+Filter out the Nerlandsøya samples
+===========
+This is part of a cooperation with Norsøk, where we analysed the samples from one malaisetrap.
+
+```{r}
+nerland_data <- dat %>% 
+  filter(location == "Nerlandsoeya") %>% 
+  droplevels()
+
+nerland_data %>% 
+  summarise(no_samples = n_distinct(sample))
+
+nerland_data %>% 
+  select(sample) %>% 
+  distinct()
+
+nerland_data %>% 
+  summarise(no_spec = n_distinct(order, family, genus, species))
+
+write_csv(nerland_data,
+          file = "out/Nerlandsoya_insekt_juli.csv")
+```
+
+
+```{r}
+dat <- dat %>% 
+  filter(location != "Nerlandsoeya") %>% 
+  droplevels()
+```
+
+
+ 
+Check missing weight data
+===========
+```{r}
+dat %>% 
+  group_by(empty_week) %>% 
+  select(Vekt_tom_flaske_.g.,
+         Vekt_flaske_med_EtOH_og_insekter_.g.,
+         Vekt_flaske_._insekter_vaat_.g.,
+         Vekt_flaske_._insekter_toerr_.g.,
+         Vaatvekt_.g.,
+         Toerrvekt_.g.
+         ) %>%  
+  distinct() %>% 
+  summarise_all(~sum(is.na(.)))
+```
+ 
+ 
+Summaries of samples
+========
+Total weight of insect catches.
+```{r}
+dat %>% 
+  group_by(sample_id) %>% 
+  summarise(dry_weight = mean(Toerrvekt_.g., na.rm = T),
+            wet_weight = mean(Vaatvekt_.g., na.rm = T)) %>% 
+  summarise(tot_dry_weight = sum(dry_weight, na.rm = T),
+            tot_wet_weight = sum(wet_weight, na.rm = T))
+
+```
+
+Total number of taxa
+```{r}
+dat %>% 
+  summarise(no_taksa = n_distinct(order, family, genus, species))
+
+```
+
+This include samples by `r max(dat$date_emptied)`.
+
+```{r}
+max(dat$date_emptied)
+```
+
+How many of the taxa have we identified to species level?
+
+```{r}
+not_id <- dat %>% 
+  filter(grepl("sp. ", species)) %>% 
+  summarise(no_identified = n_distinct(order, family, genus, species))
+
+not_id
+```
+
+```{r}
+id <- dat %>% 
+  filter(!grepl("sp. ", 
+               species)) %>% 
+  summarise(no_identified = n_distinct(order, family, genus, species))
+
+id
+```
+
+We still lack species identifications on `r 100 * not_id / (not_id + id)` percent of the taxa.
+
+
+Basic species richness graphs
+==============
+
+Quick look at diversity at the different sites.
+
+```{r}
+total_no_taxa <- dat %>% select(order, family,genus,species) %>% 
+  distinct() %>% 
+  count()
+```
+
+
+```{r no_spec_loc_malaise, fig.cap = "Cumulative number of taxa found in malaise traps."}
+dat %>% 
+  filter(grepl("MF", trap)) %>% 
+  group_by(location, habitat_type) %>% 
+  select(genus, species, habitat_type) %>% 
+  distinct() %>% 
+  count() %>% 
+  ungroup() %>% 
+  ggplot(.) +
+ geom_bar(aes(y = n, x = location, fill = habitat_type),
+           stat = "identity") +
+ # ggtitle(paste0("Kumulativ artsrikedom i\nalle malaisefeller per ", max(dat$date_emptied))) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none") +
+    scale_fill_nina() +
+  ylab("Antall taksa") +
+  xlab("Lokalitet")
+```
+
+```{r no_spec_loc_window, fig.cap = "Cumulative number of taxa found in window traps."}
+dat %>% 
+  filter(grepl("VF", trap)) %>% 
+  group_by(location, habitat_type) %>% 
+  select(genus,species) %>% 
+  distinct() %>% 
+  count() %>% 
+  ungroup() %>% 
+  ggplot(.) +
+  geom_bar(aes(y = n, x = location, fill = habitat_type),
+           stat = "identity") +
+ #  ggtitle(paste0("Kumulativ artsrikedom i\nalle vindusfeller per  ", max(dat$date_emptied))) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none")  +
+    scale_fill_nina() +
+  ylab("Antall taksa") +
+  xlab("Lokalitet")
+```
+
+
+
+Basic biomass graphs
+==============
+
+Quick look at the biomass at the different sites.
+
+```{r dry_weight_loc_malaise, fig.cap = "Average biomass (dry weight) in malaiase traps."}
+dat %>% 
+  filter(grepl("MF", trap)) %>% 
+  group_by(location, habitat_type) %>% 
+  ggplot(.) +
+ geom_boxplot(aes(y = Toerrvekt_.g., x = location, fill = habitat_type)) +
+ # ggtitle(paste0("Middels avrunnen vekt (pluss flaske)\nav insekter i malaisefeller per ", max(dat$date_emptied))) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none") +
+    scale_fill_nina() +
+  ylab("Vekt (g.)") +
+  xlab("Lokalitet")
+```
+
+```{r dry_weight_loc_window, fig.cap = "Average biomass (dry weight) in window traps."}
+dat %>% 
+  filter(grepl("VF", trap)) %>% 
+  group_by(location, habitat_type) %>% 
+  ggplot(.) +
+ geom_boxplot(aes(y = Toerrvekt_.g., x = location, fill = habitat_type), na.rm = T) +
+  #ggtitle(paste0("Middels avrunnen vekt (pluss flaske) av insekter i\nvindusfeller per ", max(dat$date_emptied))) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none") +
+    scale_fill_nina() +
+  ylab("Vekt (g.)") +
+  xlab("Lokalitet")
+```
+
+Check out the high values. Nothing obviously suspicious.
+
+```{r}
+dat %>% 
+  filter(grepl("VF", trap)) %>% 
+  filter(Toerrvekt_.g. >5) %>%
+  group_by(GenlabID) %>% 
+  summarise(mean_toerr_fl = mean(Vekt_flaske_._insekter_toerr_.g.),
+            mean_tom_fl = mean(Vekt_tom_flaske_.g.),
+            location = first(location),
+            empty_week = mean(empty_week))
+```
+
+
+Check overlap between malaise and window traps
+==============
+
+Total number of coleoptera species per trap type
+-----------
+
+```{r}
+col_spec_richn_tot <- dat %>% 
+  filter(order == "Coleoptera",
+         habitat_type == "Skog") %>% 
+  group_by(location) %>% 
+  summarize(col_spec_richn = n_distinct(genus, species)) %>% 
+  mutate(trap_type = "Alle")
+  
+```
+```{r}
+col_spec_richn_trap <- dat %>% 
+  filter(order == "Coleoptera",
+         habitat_type == "Skog") %>% 
+  group_by(location,
+           trap_type) %>% 
+  summarize(col_spec_richn = n_distinct(genus, species))
+  
+```
+
+```{r}
+col_spec_richn <- col_spec_richn_tot %>% 
+  union_all(col_spec_richn_trap)
+```
+
+```{r col_spec_richn_trap, fig.cap = "Cumulative number of Coleoptera taxa identified in each trap type"}
+ggplot(col_spec_richn, aes(y = col_spec_richn, 
+                           x = location, 
+                           fill = trap_type)) +
+  geom_bar(stat = "identity",
+           position = position_dodge()) +
+ #   ggtitle(paste0("Kumulativt antall billearter (identifiserte taksa)\ni hver felletyp per ", max(dat$date_emptied))) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_fill_nina(name = "Felletype") +
+  ylab("Antall taksa") +
+  xlab("Lokalitet")
+  
+```
+
+Percentage of catches in each trap type per species
+----------
+How to make it more readable? Split out all the singletons into a separate graph?
+
+```{r}
+col_perc_traptype <- dat %>% 
+  filter(order == "Coleoptera",
+         habitat_type == "Skog") %>% 
+  group_by(trap_type,
+           genus,
+           species_latin) %>% 
+  summarize(no_catches = n())
+  
+```
+
+```{r, fig.width = 12}
+to_plot_temp <- col_perc_traptype %>% 
+  ungroup() %>% 
+  arrange(species_latin,
+          trap_type) %>% 
+  filter(no_catches > 1) %>% 
+  group_by(species_latin) %>% 
+  mutate(caught_in = n_distinct(trap_type))
+
+temp_1 <- to_plot_temp %>% 
+  filter(caught_in == 1) %>% 
+  arrange(trap_type, species_latin)
+
+temp_2 <- to_plot_temp %>% 
+  filter(caught_in == 2) %>% 
+  arrange(species_latin, trap_type)
+
+to_plot <- rbind(temp_1, temp_2) %>% 
+  ungroup() %>% 
+  mutate(trap_type = factor(trap_type),
+         species_latin = factor(species_latin),
+         facet = rep(c(1, 2, 3, 4), times = c(61, 60, 60, 60)))
+```
+
+
+```{r col_perc_traptype, fig.width = 12}
+to_plot %>% 
+ggplot(.) +
+  geom_bar(aes(y = reorder(species_latin, species_latin), x = no_catches, fill = trap_type), 
+           stat = "identity",
+           position = position_dodge()) +
+  scale_fill_nina(name = "Trap type") +
+  ylab("") +
+  xlab("Number of catches") +
+   theme(legend.position = "none",
+         text = element_text(size=5)) +
+  facet_wrap(facets = vars(facet),
+             scales = "free_y",
+             strip.position = "right",
+             ncol = 4)
+```
+
+
+```{r col_perc_traptype2, fig.width = 12}
+p1 <- to_plot %>% 
+    slice(1:50) %>% 
+  group_by(trap_type) %>% 
+ggplot(.) +
+  geom_bar(aes(y = species_latin, x = no_catches, fill = trap_type), 
+           stat = "identity",
+           position = position_dodge()) +
+  scale_fill_nina(name = "Trap type") +
+  ylab("") +
+  xlab("Number of catches") +
+   theme(legend.position = "none",
+         text = element_text(size=5)) 
+
+
+p2 <- to_plot %>%
+    slice(51:100) %>% 
+  group_by(trap_type) %>% 
+ggplot(.) +
+  geom_bar(aes(y = species_latin,  x = no_catches, fill = trap_type), 
+           stat = "identity",
+           position = position_dodge()) +
+  scale_fill_nina(name = "Trap type") +
+  ylab("") +
+  xlab("Number of catches") +
+   theme(legend.position = "none",
+         text = element_text(size=5))
+
+p3 <- to_plot %>%
+    slice(101:150) %>% 
+  group_by(trap_type) %>% 
+ggplot(.) +
+  geom_bar(aes(y = species_latin, x = no_catches, fill = trap_type), 
+           stat = "identity",
+           position = position_dodge()) +
+  scale_fill_nina(name = "Trap type") +
+  ylab("") +
+  xlab("Number of catches") +
+   theme(legend.position = "none",
+         text = element_text(size=5))
+
+
+p4 <- to_plot %>%
+    slice(151:200) %>% 
+  group_by(trap_type) %>% 
+ggplot(.) +
+  geom_bar(aes(y = species_latin, x = no_catches, fill = trap_type), 
+           stat = "identity",
+           position = position_dodge()) +
+  scale_fill_nina(name = "Trap type") +
+  ylab("") +
+  xlab("Number of catches") +
+   theme(text = element_text(size=5))
+
+grid.arrange(p1, p2, p3, p4, nrow = 1)
+
+```
+
+
+```{r no_col_singletons}
+col_perc_traptype %>% 
+  ungroup() %>% 
+  arrange(species_latin,
+          trap_type) %>% 
+  filter(no_catches ==1) %>% 
+  group_by(trap_type) %>% 
+  summarize(no_singletons = n()) %>% 
+ ggplot(.) +
+  geom_bar(aes(y = no_singletons, x = trap_type, fill = trap_type), 
+           stat = "identity") +
+  scale_fill_nina(name = "Trap type") +
+  ylab("Number of singleton Coleoptera species") +
+  xlab("")
+```
+
+
+
+Figs to Niclas on Pollinators
+============
+Niclas Gyllenstrand at NRM asked how efficient the malaisetraps + metabarcoding are at finding pollinators. This could be a relevant graph for the report as well.
+
+
+```{r}
+poll_spec_richn <- dat %>% 
+  filter(trap_type == "Malaise") %>% 
+  filter(family == "Andrenidae" |
+         family == "Apidae" |
+         family == "Colletidae" |
+         family == "Halictidae" |
+         family == "Megachilidae" |
+         family == "Melittidae" |
+         family == "Syrphidae" |
+          
+         family == "Hesperiidae" |
+         family == "Lycaenidae" |
+         family == "Nymphalidae" |
+         family == "Papilionidae" |
+         family == "Pieridae" |
+         family == "Riodinidae"
+           ) %>% 
+  group_by(family) %>% 
+  distinct(family, genus, species) %>% 
+  summarize(col_spec_richn = n(),
+            no_unidentified_sp = sum(grepl("sp.", species)))
+```
+
+
+```{r poll_spec_richn}
+ggplot(poll_spec_richn, aes(x = family, y = col_spec_richn, label = col_spec_richn)) +
+  geom_bar(stat = "identity", 
+           aes(fill = family)) + 
+  geom_text(size = 3,
+            position = position_nudge(y = 4)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_fill_nina(name = "Familje") +
+  xlab("") +
+  ylab("Antall arter")
+```
+
+
+```{r}
+pollinator_species <- dat %>% 
+  filter(trap_type == "Malaise") %>% 
+  filter(family == "Andrenidae" |
+         family == "Apidae" |
+         family == "Colletidae" |
+         family == "Halictidae" |
+         family == "Megachilidae" |
+         family == "Melittidae" |
+         family == "Syrphidae" |
+          
+         family == "Hesperiidae" |
+         family == "Lycaenidae" |
+         family == "Nymphalidae" |
+         family == "Papilionidae" |
+         family == "Pieridae" |
+         family == "Riodinidae"
+           ) %>% 
+  distinct(order, family, genus, species) %>% 
+  arrange(family, genus, species) 
+```
+
+
+```{r}
+dat %>% 
+  filter(trap_type == "Malaise") %>% 
+  filter(family == "Apidae") %>% 
+  distinct(genus, species) %>% 
+  select(genus, species)
+```
+
+```{r}
+write_csv(pollinator_species, 
+          path = "out/pollinator_species.csv")
+```
+
+
+
+
+
+Phenology graphs
+===========
+Some "timeseries" throughout the season. 
+
+```{r}
+seasonAvgNo <- dat %>% 
+  filter(weeks_sampled == 2) %>% 
+  group_by(habitat_type, date_emptied, location) %>% 
+  summarise(no_species = n_distinct(genus, species),
+            sum_biomass = sum(Vekt_flaske_._insekter_vaat_.g., na.rm = T) / no_species)
+
+
+# test <- seasonAvgNo <- dat %>% 
+#   filter(weeks_sampled == 2) %>% 
+#   group_by(habitat_type, date_emptied, location) %>% 
+#   select(habitat_type, date_emptied, location, Vekt_flaske_._insekter_vaat_.g.) %>% 
+#   distinct() %>% 
+#   summarise(sum(Vekt_flaske_._insekter_vaat_.g., na.rm = T))
+
+```
+
+```{r no_spec_phenology_forest}
+to_plot <- seasonAvgNo %>% 
+  filter(habitat_type == "Skog")
+
+to_annotate <- to_plot %>% 
+  group_by(location) %>% 
+  arrange(date_emptied) %>% 
+  filter(row_number()==1)
+
+ggplot(to_plot) +
+    geom_line(aes(x = date_emptied, 
+                y = no_species, 
+                color = location),
+                lwd = 0.75) +
+  geom_point(aes(x = date_emptied, 
+                 y = no_species, 
+                 color = location),
+                 size = 2.5) +
+  geom_text_repel(data = to_annotate, 
+             aes(x = date_emptied, 
+                 y = no_species, 
+                 label = location, 
+                 family = "mono")) +
+  ylab("Antall taksa") +
+  xlab("Tømmedato") +
+  scale_color_nina(name = "Lokalitet")
+```
+
+```{r no_spec_phenology_grassland}
+to_plot <- seasonAvgNo %>% 
+  filter(habitat_type == "SN_Gressmark")
+
+to_annotate <- to_plot %>% 
+  group_by(location) %>% 
+  arrange(date_emptied) %>% 
+  filter(row_number()==1 )
+
+ggplot(to_plot) +
+  geom_line(aes(x = date_emptied, 
+                y = no_species, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = date_emptied, 
+                 y = no_species, 
+                 color = location),
+             size = 2.5) +
+  geom_text_repel(data = to_annotate, 
+             aes(x = date_emptied, 
+                 y = no_species, 
+                 label = location, 
+                 family = "mono")) +
+  ylab("Antall taksa") +
+  xlab("Tømmedato") +
+  scale_color_nina(name = "Lokalitet")
+```
+
+```{r biomass_phenology_forest}
+to_plot <- seasonAvgNo %>% 
+  filter(habitat_type == "Skog")
+
+to_annotate <- to_plot %>% 
+  group_by(location) %>% 
+  arrange(date_emptied) %>% 
+  filter(row_number()== 1)
+
+ggplot(to_plot) +
+  geom_line(aes(x = date_emptied, 
+                y = sum_biomass, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = date_emptied, 
+                 y = sum_biomass, 
+                 color = location),
+             size = 2.5) +
+  geom_text_repel(data = to_annotate, 
+             aes(x = date_emptied, 
+                 y = sum_biomass, 
+                 label = location, 
+                 family = "mono")) +
+  ylab("Total innsamlet biomasse (våtvekt g., pluss flaske)") +
+  xlab("Tømmedato") +
+  scale_color_nina(name = "Lokalitet")
+```
+
+```{r biomass_phenology_grassland}
+to_plot <- seasonAvgNo %>% 
+  filter(habitat_type == "SN_Gressmark") 
+
+to_annotate <- to_plot %>% 
+  group_by(location) %>% 
+  arrange(date_emptied) %>% 
+  filter(row_number()== 1)
+
+ggplot(to_plot) +
+  geom_line(aes(x = date_emptied, 
+                y = sum_biomass, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = date_emptied, 
+                 y = sum_biomass, 
+                 color = location),
+             size = 2.5) +
+  geom_text_repel(data = to_annotate, 
+             aes(x = date_emptied, 
+                 y = sum_biomass, 
+                 label = location, 
+                 family = "mono")) +
+  ylab("Total innsamlet biomasse (våtvekt g. pluss flaske)") +
+  xlab("Tømmedato") +
+  scale_color_nina(name = "Lokalitet")
+```
+
+
+Plot some weather data
+=======
+
+
+```{r}
+logger_tbl <- tbl(con,
+                   in_schema("loggers", "logger_data")) %>% 
+  select(-id)
+
+logger_dep_tbl <- tbl(con,
+                   in_schema("loggers", "logger_deployments")) %>% 
+  select(-id)
+```
+
+```{r}
+logger_data <- logger_tbl %>% 
+  left_join(logger_dep_tbl,
+            by = c("logger_id" = "logger_id",
+                   "logger_type" = "logger_type")) %>% 
+  mutate(day = as.Date(date))
+```
+
+Plot average values for each site during July
+
+```{r avg_logger_july}
+tt <- logger_data %>% 
+  group_by(location, day, data_type) %>% 
+  summarize(value = mean(value)) %>% 
+  filter(day >= '2020-07-01' &
+         day < '2020-08-01'
+         ) %>% 
+  collect() %>% 
+  mutate(Lokalitet = factor(location, levels = c(paste0("Semi-nat_", 1:10), paste0("Skog_", 1:10)))) %>% 
+  mutate(data_type = factor(data_type, levels = )) 
+##Why can't I set the levels in the pipe?
+levels(tt$data_type) <- c("Duggpunkt", "Luftfuktighet", "Temperatur", "Lys")
+
+tt %>%
+  ggplot(.) +
+  geom_line(aes(x = day, y = value, color = Lokalitet)) +
+  facet_wrap(~data_type,
+             scales = "free") +
+  scale_color_nina(name = "Lokalitet") +
+  xlab("Dag") +
+  ylab("") +
+  theme(legend.key.height = unit(0.5, "cm"))
+  
+```
+
+
+
+
+Sampling time analysis
+========
+Time to look at the impact of sampling time, 2 vs 4 weeks.
+
+
+First off, simple plot of species richness against days sampled.
+
+```{r spec_rich_vs_days_coll}
+dat %>% 
+  group_by(location, 
+           trap,
+           trap_type, 
+           empty_week,
+           weeks_sampled,
+           days_collected) %>% 
+  summarise(no_spec = n_distinct(order, family, genus, species)) %>% 
+  ggplot(aes(x = days_collected, y = no_spec)) +
+  geom_point(aes(color = trap_type)) +
+  scale_color_nina(name = "Felletype") +
+  ylab("Antall taksa") +
+  xlab("Innsamlingsdager")
+
+```
+
+Not easy to see any patterns here, since there is such variation in the catches throughout the season. We need to sum up the catches in the 2 2-week periods and compare to the single 4 week periods.
+
+We first identify which of the 2-week samples that should be aggregated.
+```{r}
+#4-week "target" to agg to
+week_4 <- dat %>% 
+  filter(weeks_sampled == 4) %>% 
+  select(location,
+         empty_week) %>% 
+  distinct() %>% 
+  mutate(agg_id = 1:n())
+
+#add 2 weeks earlier
+earlier_2_weeks <- week_4 %>% 
+  select(location,
+         agg_id) %>% 
+  mutate(empty_week = week_4$empty_week - 2)
+
+which_to_agg <- week_4 %>% 
+  bind_rows(earlier_2_weeks)
+
+#add aggregation ids to 2-week samplings
+to_agg <- dat %>% 
+  filter(weeks_sampled == 2) %>% 
+  left_join(which_to_agg,
+            by = c("location" = "location",
+                   "empty_week" = "empty_week"))
+```
+
+Check which didn't get an aggregation
+```{r}
+to_agg %>% 
+  filter(is.na(agg_id)) %>% 
+  select(location,
+         empty_week,
+         trap) %>% 
+  distinct() %>% 
+  arrange(empty_week,
+          location) %>% 
+  print(n = Inf)
+```
+
+The samples from week 24 are expected, since not all traps where set up early enough to get 2 emptyings by then.
+
+```{r}
+dat %>% 
+  filter(location == 'Semi-nat_2' &
+           empty_week == 34) %>% 
+  select(location,
+         empty_week,
+         date_emptied,
+         weeks_sampled,
+         trap,
+         GenlabID) %>% 
+  distinct()
+```
+
+But Semi-nat_1, week_32, trap MF2 should be there. Semi-nat_5 as well. Seems that these haven't been run yet. I'll remove these for the comparison.
+
+
+
+```{r}
+#Sum the genetic reads to combine the two weeks
+agg_data_2_week <- to_agg %>% 
+  filter(!is.na(agg_id)) %>% 
+  group_by(location,
+           trap_type,
+           trap,
+           agg_id,
+           species_latin) %>% 
+  summarise(value = sum(value)) %>% 
+  ungroup() 
+
+#Add the week information for the second sampling
+agg_data_2_week <- agg_data_2_week %>% 
+  left_join(week_4,
+            by = c("agg_id" = "agg_id",
+                   "location" = "location")) %>% 
+  mutate(weeks_sampled = 2) %>% 
+  select(location,
+         empty_week,
+         weeks_sampled,
+         trap_type,
+         trap,
+         species_latin,
+         value)
+
+
+#Select only the original 4 week samplings
+data_4_week <- dat %>% 
+  filter(weeks_sampled == 4) %>% 
+    select(location,
+           empty_week,
+           weeks_sampled,
+           trap_type,
+           trap,
+           species_latin,
+           value) 
+
+#Add the original 4 weeks to the summarized 2 2-week samplngs
+week_comp_data <- agg_data_2_week  %>% 
+  bind_rows(data_4_week)
+
+```
+
+Summarise the number of species in both sample lengths.
+
+```{r}
+no_species_weeks <- week_comp_data %>% 
+  group_by(location,
+           empty_week,
+           weeks_sampled,
+           trap_type) %>% 
+  summarise(no_species = n())
+```
+
+
+```{r}
+#Check comparison
+no_species_weeks %>% 
+  group_by(location,
+           empty_week,
+           trap_type) %>% 
+  summarise(no_comp = n()) %>% 
+  print(n = Inf)
+```
+
+Make a comparison table.
+```{r}
+comp_species_week <- no_species_weeks %>% 
+  pivot_wider(id_cols = c(location, 
+                          empty_week, 
+                          trap_type),
+              names_from = weeks_sampled,
+              values_from = no_species,
+              names_prefix = "sample_time_") %>% 
+  mutate(diff_sample_time = sample_time_4 - sample_time_2,
+         prc_diff_sample_time = 100 *  (sample_time_4 - sample_time_2) / sample_time_2)
+```
+
+Quality check of a few rows. Seems OK.
+
+```{r}
+dat %>% 
+  filter(location == "Semi-nat_1" &
+           (empty_week == 26 | empty_week == 28) &
+           trap == "MF1"
+         ) %>% 
+  summarize(no_spec = n_distinct(species_latin))
+
+
+dat %>% 
+  filter(location == "Semi-nat_5" &
+           (empty_week == 22 | empty_week == 24) &
+           trap == "MF1"
+         ) %>% 
+  summarize(no_spec = n_distinct(species_latin))
+
+dat %>% 
+  filter(location == "Semi-nat_5" &
+           (empty_week == 24 ) &
+           trap == "MF2"
+         ) %>% 
+  summarize(no_spec = n_distinct(species_latin))
+
+dat %>% 
+  filter(location == "Semi-nat_6" &
+           (empty_week == 26 ) &
+           trap == "MF2"
+         ) %>% 
+  summarize(no_spec = n_distinct(species_latin))
+
+week_comp_data %>% 
+  filter(location == "Semi-nat_5" &
+           (empty_week == 24 ) &
+           trap == "MF2"
+         ) %>% 
+  summarize(no_spec = n_distinct(species_latin))
+
+no_species_weeks %>% 
+  filter(location == "Semi-nat_5" & 
+           empty_week == 24)
+
+```
+
+
+
+```{r richness_week_malaise, fig.cap = "Difference (g.) in cumulative species richness over 2 2-week samplings, compared to 1 4 week sampling. Catch in 1 Malaise trap per period. Negative values indicate that 4-week samplings gave lower insect species richness than the two 2-week samplings."}
+comp_species_week %>% 
+  group_by(location) %>% 
+  filter(trap_type == "Malaise") %>% 
+  ggplot(.) +
+  geom_line(aes(x = empty_week, 
+                y = diff_sample_time, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = empty_week, 
+                 y = diff_sample_time, 
+                 color = location),
+             size = 2.5) + 
+  scale_color_nina(name = "Lokalitet") +
+  ylab("Diff. kumulativ 2 uker - 4 uker (no. taksa)") +
+  xlab("Tømmingsuke") +
+  geom_hline(yintercept = 0) +
+  theme(legend.key.height = unit(0.5, "cm"))
+
+
+```
+
+```{r prc_richness_week_malaise, fig.cap = "Percentage difference in cumulative species richness over 2 2-week samplings, compared to 1 4 week sampling. Catch in 1 Malaise trap per period. Negative values indicate that 4-week samplings gave lower insect species richness than the two 2-week samplings."}
+comp_species_week %>% 
+  group_by(location) %>% 
+  filter(trap_type == "Malaise") %>% 
+  ggplot(.) +
+  geom_line(aes(x = empty_week, 
+                y = prc_diff_sample_time, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = empty_week, 
+                 y = prc_diff_sample_time, 
+                 color = location),
+             size = 2.5) + 
+  scale_color_nina(name = "Lokalitet") +
+  ylab("% Diff. kumulativ 2 uker - 4 uker") +
+  xlab("Tømmingsuke") +
+  geom_hline(yintercept = 0) +
+  theme(legend.key.height = unit(0.5, "cm"))
+
+
+```
+
+```{r richness_week_window, fig.cap = "Difference in cumulative species richness over 2 2-week samplings, compared to 1 4 week sampling. Catch in 1 Malaise trap per period. Negative values indicate that 4-week samplings gave lower insect species richness than the two 2-week samplings."}
+comp_species_week %>% 
+  group_by(location) %>% 
+  filter(trap_type == "Vindu") %>% 
+  ggplot(.) +
+  geom_line(aes(x = empty_week, 
+                y = diff_sample_time, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = empty_week, 
+                 y = diff_sample_time, 
+                 color = location),
+             size = 2.5) + 
+  scale_color_nina(name = "Lokalitet") +
+  ylab("Diff. kumulativ 2 uker - 4 uker") +
+  xlab("Tømmingsuke") +
+  geom_hline(yintercept = 0) 
+
+```
+
+```{r prc_richness_week_window, fig.cap = "Percentage difference in cumulative species richness over 2 2-week samplings, compared to 1 4 week sampling. Catch in 2 window traps per period. Negative values indicate that 4-week samplings gave lower insect species richness than the two 2-week samplings."}
+comp_species_week %>% 
+  group_by(location) %>% 
+  filter(trap_type == "Vindu") %>% 
+  ggplot(.) +
+  geom_line(aes(x = empty_week, 
+                y = prc_diff_sample_time, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = empty_week, 
+                 y = prc_diff_sample_time, 
+                 color = location),
+             size = 2.5) + 
+  scale_color_nina(name = "Lokalitet") +
+  ylab("% Diff. kumulativ 2 uker - 4 uker") +
+  xlab("Tømmingsuke") +
+  geom_hline(yintercept = 0) 
+
+```
+
+A similar comparison, but for biomass.
+-------------
+
+```{r}
+biomass_agg_data_2_week <- to_agg %>% 
+  filter(!is.na(agg_id)) %>% 
+  select(location,
+         empty_week,
+           trap_type,
+           trap,
+           agg_id,
+         biomass = Toerrvekt_.g.) %>%
+  distinct() %>% 
+  arrange(location,
+          empty_week,
+          trap) %>% 
+  group_by(location,
+           trap_type,
+           agg_id) %>% 
+  summarise(empty_week = max(empty_week),
+            biomass = sum(biomass)
+            ) %>% 
+  ungroup()  %>% 
+  select(-agg_id)
+
+
+
+biomass_data_4_week <- dat %>% 
+  filter(weeks_sampled == 4) %>% 
+  select(location,
+         empty_week,
+         trap_type,
+         trap,
+         biomass = Toerrvekt_.g.) %>%
+  distinct() %>% 
+  arrange(location,
+          empty_week,
+          trap) %>% 
+    group_by(location,
+             empty_week,
+           trap_type) %>% 
+    summarise(empty_week = max(empty_week),
+            biomass = sum(biomass)
+            ) %>% 
+  ungroup()
+
+#Make comparison table
+biomass_comp <- biomass_agg_data_2_week %>% 
+  left_join(biomass_data_4_week,
+            by = c("location" = "location",
+                   "empty_week" = "empty_week",
+                   "trap_type" = "trap_type"),
+            suffix = c("_2_weeks", "_4_weeks")) %>% 
+  mutate(diff_sample_time = biomass_4_weeks - biomass_2_weeks,
+         prc_diff_sample_time = 100 * (biomass_4_weeks - biomass_2_weeks) / biomass_2_weeks)
+  
+  
+```
+
+
+```{r prc_biomass_week_malaise, fig.cap = "Percentage difference in cumulative dry weight over 2 2-week samplings, compared to 1 4 week sampling. Catch in 1 Malaise trap per period. Negative values indicate that 4-week samplings gave lower insect species richness than the two 2-week samplings."}
+biomass_comp %>% 
+  group_by(location) %>% 
+  filter(trap_type == "Malaise") %>% 
+  ggplot(.) +
+  geom_line(aes(x = empty_week, 
+                y = prc_diff_sample_time, 
+                color = location),
+            lwd = 0.75) +
+  geom_point(aes(x = empty_week, 
+                 y = prc_diff_sample_time, 
+                 color = location),
+             size = 2.5) +
+  scale_color_nina(name = "Lokalitet") +
+  ylab("% Diff. kumulativ 2 uker - 4 uker") +
+  xlab("Tømmingsuke") +
+  geom_hline(yintercept = 0) +
+  theme(legend.key.height = unit(0.5, "cm"))
+```
+
+We can do the same comparison with wet weight, althought we might expect that this will add some weight of the ethanol and the bottles, which will lead to bias when we sum these together for the 2 weeks. Anyway, this is the way it looks for wet weight.
+
+
+
+```{r}
+biomass_agg_data_2_week <- to_agg %>% 
+  filter(!is.na(agg_id)) %>% 
+  select(location,
+         empty_week,
+           trap_type,
+           trap,
+           agg_id,
+         biomass = Vaatvekt_.g.) %>%
+  distinct() %>% 
+  arrange(location,
+          empty_week,
+          trap) %>% 
+  group_by(location,
+           trap_type,
+           agg_id) %>% 
+  summarise(empty_week = max(empty_week),
+            biomass = sum(biomass)
+            ) %>% 
+  ungroup()  %>% 
+  select(-agg_id)
+
+
+
+biomass_data_4_week <- dat %>% 
+  filter(weeks_sampled == 4) %>% 
+  select(location,
+         empty_week,
+         trap_type,
+         trap,
+         biomass = Vaatvekt_.g.) %>%
+  distinct() %>% 
+  arrange(location,
+          empty_week,
+          trap) %>% 
+    group_by(location,
+             empty_week,
+           trap_type) %>% 
+    summarise(empty_week = max(empty_week),
+            biomass = sum(biomass)
+            ) %>% 
+  ungroup()
+
+#Make comparison table
+biomass_comp <- biomass_agg_data_2_week %>% 
+  left_join(biomass_data_4_week,
+            by = c("location" = "location",
+                   "empty_week" = "empty_week",
+                   "trap_type" = "trap_type"),
+            suffix = c("_2_weeks", "_4_weeks")) %>% 
+  mutate(diff_sample_time = biomass_2_weeks - biomass_4_weeks,
+         prc_diff_sample_time = (biomass_2_weeks - biomass_4_weeks) / biomass_2_weeks)
+  
+  
+```
+
+
+```{r prc_wet_weight_week_malaise, fig.cap = "Percentage difference in cumulative wet weight over 2 2-week samplings, compared to 1 4 week sampling. Catch in 1 Malaise trap per period. Negative values indicate that 4-week samplings gave lower insect species richness than the two 2-week samplings."}
+biomass_comp %>% 
+  group_by(location) %>% 
+  filter(trap_type == "Malaise") %>% 
+  ggplot(.) +
+  geom_point(aes(x = empty_week, y = prc_diff_sample_time, color = location)) +
+  geom_line(aes(x = empty_week, y = prc_diff_sample_time, color = location)) +
+  scale_color_nina(name = "Lokalitet") +
+  ylab("% Diff. kumulativ 2 uker - 4 uker") +
+  xlab("Tømmingsuke") +
+  geom_hline(yintercept = 0) +
+  theme(legend.key.height = unit(0.5, "cm"))
+
+```
+
+
+Compare the ethanol to the propglykol window traps
+===============
+Quick analysis.
+
+```{r}
+liquid_comp <- dat %>% 
+  filter(trap_type == "Vindu") %>% 
+  group_by(location,
+           trap,
+           liquid,
+           weeks_sampled,
+           empty_week,
+           sample_id
+           ) %>% 
+  summarise(no_species = n_distinct(species_latin))
+
+liquid_comp
+```
+
+```{r}
+
+liquid_mod_0 <- glmer(no_species ~ liquid * weeks_sampled + (1| sample_id) + (1 | empty_week) + (1 | location), 
+                      family = "poisson",
+                      data = liquid_comp)
+
+isSingular(liquid_mod_0)
+
+summary(liquid_mod_0)
+```
+```{r}
+overdisp_fun <- function(model) {
+    rdf <- df.residual(model)
+    rp <- residuals(model,type="pearson")
+    Pearson.chisq <- sum(rp^2)
+    prat <- Pearson.chisq/rdf
+    pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+    c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+liquid_mod_1 <- glmer(no_species ~ liquid * weeks_sampled + (1 | empty_week) + (1 | location), 
+                      family = "poisson",
+                      data = liquid_comp)
+
+isSingular(liquid_mod_1)
+
+summary(liquid_mod_1)
+
+overdisp_fun(liquid_mod_1)
+overdisp_fun(liquid_mod_0)
+
+```
+
+
+```{r}
+liquid_pred <- ggpredict(liquid_mod_0,
+                         terms = c("liquid", "weeks_sampled"))
+```
+
+
+```{r liquid_window_plot, fig.cap = "Modelled difference in number of taxa found in window traps, in 2/4 weeks sampling and ethanol/propylen-glycole liquid."}
+plot(liquid_pred) +
+  scale_color_nina(name = "Antall uker") +
+  ggtitle("") +
+  ylab("Antall taksa") +
+  xlab("Væske i vindusfelle")
+```
+
+Ano-registrations
+=======
+Here is some simple graphs of the ANO measurements at the locations.
+
+
+```{r}
+ano_arter <- tbl(con, 
+                in_schema("ano", "herb_species"))
+
+ano_plots <- tbl(con, 
+                in_schema("ano", "survey_points"))
+
+trap_loc <- tbl(con, 
+                in_schema("locations", "localities")) %>%
+                filter(locality != "Ilhaugen",
+                locality != "Nerlandsøya")
+
+```
+```{r}
+  trap_loc %>% 
+  left_join(ano_plots,
+            by = c("ano_flate_id" = "ano_flate_id")) %>% 
+  select(-c(geom_punched, geom_inferred)) %>% 
+  collect() %>% 
+  select(locality, ano_flate_id, global_id) %>% 
+  distinct() %>% 
+  print(n = Inf)
+```
+
+
+```{r}
+ano_herb_spec <-  trap_loc %>% 
+  left_join(ano_plots,
+            by = c("ano_flate_id" = "ano_flate_id")) %>% 
+  left_join(ano_arter,
+            by = c("global_id" = "parent_global_id")) %>% 
+  select(-c(geom_punched, geom_inferred)) %>% 
+  collect()
+
+```
+
+
+```{r}
+ano_agg <- ano_herb_spec %>% 
+  group_by(global_id.x) %>% 
+  summarize(locality = first(locality),
+            no_spec = n_distinct(navn),
+            cover = sum(dekning_prc, na.rm = T)) %>% 
+  group_by(locality) %>% 
+  summarise(mean_no_spec = mean(no_spec),
+            mean_cover = mean(cover)) %>% 
+  collect() %>% 
+  mutate(locality = factor(locality, levels = c(paste0("Semi-nat_", 1:10), paste0("Skog_",1:10 )))) %>% 
+  filter(locality != "Skog_1")
+```
+
+```{r ano_herb_spec}
+ano_agg %>% 
+  ggplot(.) +
+  geom_bar(aes(x = locality, y = mean_no_spec, fill = mean_cover), stat = "identity") +
+  scale_fill_nina(name = "Middelverdi\ndekningsgrad\nurter",
+                  discrete = F,
+                  palette = "darkblue-orange") +
+  ylab("Middels antall arter urter per ANO sirkel") +
+  xlab("Lokalitet") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+Forest-registrations
+==========
+Some simple graphs of the forest registrations.
+
+```{r}
+tree_reg <- tbl(con, 
+                in_schema("landsskog", "survey_data"))
+
+tree_plots <- tbl(con, 
+                in_schema("landsskog", "survey_points"))
+
+trap_loc <- tbl(con, 
+                in_schema("traps", "locations"))
+
+tree_spec <- tbl(con,
+                 in_schema("landsskog", "tree_species"))
+```
+
+
+```{r}
+tree_spec <- tree_reg %>% 
+  left_join(tree_plots,
+            by = c("parent_id" = "id")) %>%  
+  left_join(tree_spec,
+            by = c("treslag_kode" = "treslag_kode")) %>% 
+  left_join(trap_loc,
+            by = c("ano_flate_id" = "ano_flate_id"))
+
+```
+Which tree got age determined?
+```{r}
+tree_spec %>% 
+  select(location, treslag, boniteringstre) %>%  
+  arrange(location) %>% 
+  print(n = Inf)
+```
+
+
+```{r}
+dom_tree <- tree_spec %>% 
+  group_by(location,
+           treslag) %>% 
+  summarise(no_trees = n()) %>%  
+  collect() %>% 
+  arrange(location,
+          desc(no_trees)) %>% 
+ slice_min(1) %>% 
+  select(dom_tree = treslag,
+         -no_trees)
+
+tree_agg <- tree_spec %>% 
+  collect() %>% 
+  left_join(dom_tree,
+            by = c("location" = "location")) %>% 
+  group_by(location, dom_tree) %>% 
+  summarize(avg_age = mean(alder, na.rm = T)) %>% 
+  collect() %>% 
+  mutate(location = factor(location, levels = paste0("Skog_", 1:10)))
+```
+
+```{r tree_spec}
+tree_agg %>% 
+  ggplot(.) +
+  geom_bar(aes(x = location, y = avg_age, fill = dom_tree), stat = "identity") +
+  scale_fill_nina(name = "Dominerende treslag",
+                  discrete = T,
+                  palette = "darkblue-orange") +
+  ylab("Middelalder på de 2 største treene") +
+  xlab("Lokalitet") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+
+Glyphosate figure
+=========
+A simple figure of the sales statistics of glyphosate in Norway
+
+
+```{r}
+herb_pest_data <- read_csv("../../Data/Plantevern/glyphosate_neonic.csv")
+```
+
+```{r, glyphosate_trend}
+herb_pest_data %>% 
+  filter(type == "glyfosat") %>% 
+  ggplot(.) +
+  geom_line(aes(x = year, y = amount, color = type), lwd = 1) +
+  scale_color_nina(name = "Stoff") +
+  ylab("Salgsstatistikk i Norge (kg)") +
+  xlab("År")
+  
+```
+
+```{r, imidakloprid_trend}
+herb_pest_data %>% 
+  filter(type == "imidakloprid") %>% 
+  ggplot(.) +
+  geom_line(aes(x = year, y = amount, color = type), lwd = 1) +
+  scale_color_nina(name = "Stoff") +
+  ylab("Salgsstatistikk i Norge (kg)") +
+  xlab("År")
+  
+```
+
+
+
+
+
+
+
+
+
