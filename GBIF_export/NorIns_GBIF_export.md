@@ -1,16 +1,11 @@
 GBIF data export from the Norwegian insect monitoring program (NorIns)
 ================
 Jens Åström
-9/11/23
+9/12/23
 
 ``` r
 suppressPackageStartupMessages({
 require(tidyverse)
-require(NinaR) #optional
-require(DBI)
-require(RPostgres)
-require(sf)
-require(maps)
 require(tidyjson)
 require(xml2)
 })
@@ -30,45 +25,52 @@ See “Citation and meta-data” below.
 
 ## Data structure
 
-The data collection of the program has a hierarchical nature, where the
-data from each respective level is originally stored as separate tables
-in a database (normalised data). For the purpose of this GBIF dataset,
-at the topmost level 4), we have a whole sampling season (april-october)
-of each locality, where data associated with the entire locality-season
-is stored, such as habitat qualities. At level 3), we have individual
-sampling periods (of typically 2 weeks) of one or multiple traps within
-the locality. This data includes e.g. time period and associated
-weather. Each season can have up to 14 such sampling periods. At level
-2), we have data from a single trap within a sampling period, such as
-biomass and ethanol concentration. Lastly, at level 1, we have insect
-identifications of each trap sample. Most samples only have 1
-identification “event”, although multiple identification methods can be
-employed some samples.
+The data collection of the program has a hierarchical nature, and the
+data from each level is originally stored in separate tables in a
+database (normalized data). At the topmost level we have 4)
+`year_locality`, sampling seasons (april-october) of localities, where
+we store data that is common for the whole locality-season, such as
+habitat quality, locality name etc. At level 3) `locality_sampling`, we
+have individual sampling periods of typically 2 weeks within each
+locality-season. Each season can have up to 14 such sampling periods,
+and this data includes sampling duration and associated weather. At
+level 2) `sampling_trap`, we have data from a single trap within a
+sampling period, such as biomass and ethanol concentration. Some
+localities have multiple traps, so there can be several rows of trap
+data `sampling_trap` for a single `locality_sampling`. Lastly, at level
+1 `identifications`, we have insect identifications of each trap sample.
+Most samples only have 1 identification “event”, although multiple
+identification methods can be employed for some samples.
 
 The hierarchical structure is handled within GBIF through the Darwin
-Event Core-standard. Here, all the actual observation data of the
-species are located in an “occurrence”-table, which is linked to an
-“event”-table containing the information linked to the observation. The
-event-table has to handle all the hierarchical levels mentioned above,
-and thus combines data from many original tables. The hierarcical nature
-of these tables are maintained through “parent-event”-keys, that relate
-lower levels to their respective higher “parent” levels. By this design
-of GBIF, you can have an arbitrary number of parent events (hierarchical
-levels) within the same table, instead of normalizing the data across
-several tables. The downside is that you need to keep track of the
-eventID’s and the parentEventID’s to recreate the original data
-structure.
+Event Core-standard. Here, all observation data of the species are
+located in an “occurrence”-table. This stores the species names and
+amounts that has been observed. This table is linked to an “event”-table
+containing all the information about the observations, such as when and
+where it was made. This single event-table has to handle all the
+hierarchical levels mentioned above, and thus has to combine data from
+many original tables. The hierarchical nature of the data is maintained
+through “parent-event”-keys, which relate lower levels to their
+respective higher “parent” levels. By this design of GBIF, you can have
+an arbitrary number of parent events (hierarchical levels) within the
+same table, instead of spreading the data across several tables
+(normalizing the data). This data structure is therefore very flexible
+and compact. The downside is that you need to keep track of the
+eventID’s and the parentEventID’s , and unpack the data to recreate the
+original data structure.
+
+This prosess is shown here.
 
 ## Finding the raw data and how to cite it
 
 The dataset can be found at http://gbif.org by searching for “National
 insect monitoring in Norway”. This will take you to the webpage of the
 dataset:
-https://www.gbif.org/dataset/19fe96b0-0cf3-4a2e-90a5-7c1c19ac94ee Here
-you can access the meta-data of the dataset. This data is freely
+https://www.gbif.org/dataset/19fe96b0-0cf3-4a2e-90a5-7c1c19ac94ee where
+you can access the meta-data of the dataset. The data is freely
 available, but please cite the source. The citation is visible at the
-dataset’s webpage at GBIF. The citation can be fetched programmatically
-this way.
+dataset’s webpage at GBIF. The citation can also be fetched
+programmatically this way.
 
 ``` r
 dataset_id <- "19fe96b0-0cf3-4a2e-90a5-7c1c19ac94ee" ##From the webpage URL
@@ -83,13 +85,13 @@ The citation to use is then:
 
 - Åström J (2023). National insect monitoring in Norway. Version 1.9.
   Norwegian Institute for Nature Research. Sampling event dataset
-  https://doi.org/10.15468/2jwnc6 accessed via GBIF.org on 2023-09-11.
+  https://doi.org/10.15468/2jwnc6 accessed via GBIF.org on 2023-09-12.
 
 ## Fetching the raw-data from GBIF
 
 We need an “endpoint_url” to retrieve the actual data set. This is found
 at the bottom of the webpage for the dataset. This can also be found
-programatically as shown here.
+programmatically as shown here.
 
 ``` r
 dataset_url <-  paste0("http://api.gbif.org/v1/dataset/",dataset_id,"/endpoint")
@@ -142,11 +144,14 @@ occurrence_raw <- read_delim("GBIF_data/occurrence.txt",
 
 ## Unpacking the data from the GBIF raw format
 
-As mentioned above, the GBIF eventCore dataformat is compact for
-storage, but isn’t the most practical to use since all hierarchical
-levels are stored in the same event table. The next step is therefore to
-split out the separate levels from the combined event table. I will use
-the original table names for each hierarchical level.
+As mentioned above, the GBIF eventCore data format is compact for
+efficient storage, but isn’t the most practical to use for analysis and
+exploration. The next step is therefore to split out the separate levels
+from the combined event table into separate tables. Optionally, these
+can later be joined to create single (but very wide) data table. I will
+use the original table names for each hierarchical level.
+
+We start by splitting up the 4 different levels.
 
 ``` r
 identifications_raw <- event_raw %>% 
@@ -165,9 +170,9 @@ year_locality_raw <- event_raw %>%
 ### Extract the data that didn’t fit into the GBIF standard
 
 In all levels, we have information that don’t fit into the GBIF data
-format. These are bundled together in to a JSON-string in a GBIF column
-named “dynamicProperties”. We need to spread this content into separate
-columns.
+format/ontology. These are bundled together in to a JSON-string in a
+darwinCore column named “dynamicProperties”. We need to spread this
+content into separate columns.
 
 ``` r
 identifications_raw %>% 
@@ -190,8 +195,8 @@ stable.
 To reiterate, this is the species identifications (metabarcoding
 results) from each trap catch. As of now (2023), there is only 1 species
 identification process per sample, but in principle there could be
-multiple identifications, for example manual identification in addition
-to metabarcoding, for some samples.
+multiple identifications for some samples, for example manual
+identification in addition to metabarcoding.
 
 ``` r
 identifications <- identifications_raw %>% 
@@ -206,7 +211,6 @@ tempDynamic <- identifications_raw %>%
   spread_all()  %>% 
   as_tibble() %>% 
   select(-document.id)
-
 
 identifications <- identifications %>% 
   left_join(tempDynamic,
@@ -242,11 +246,11 @@ identifications %>%
     6 metabarcoding_novaseq NA                            3557357 NA              
     # ℹ 2 more variables: ekstraksjonskit <lgl>, ekstraksjonskommentar <lgl>
 
-We can also remove some darwinCore-columns that are not relevant for
-this level, such that we end up with a more compact table. We also
-rename the parentEventID column to make further joins more intuitive,
-and adopt a snake case naming standard, which is good practice when
-working with databases (esp. PostgreSQL).
+We here also remove some mandatory darwinCore-columns that are not
+particularly relevant for this level. We also rename the parentEventID
+column to make further joins more intuitive, and adopt a snake case
+naming standard, a good practice when working with databases
+(esp. PostgreSQL).
 
 ``` r
 identifications <- identifications %>% 
@@ -263,8 +267,8 @@ identifications <- identifications %>%
 #### Sampling trap
 
 These are the data attributed to a single trap catch. The locationIDs
-are not very human-readable, but we can extract the trap name from the
-“locationRemarks” column.
+(UUIDs) are not very human-readable, but we can extract the original
+trap name from the “locationRemarks” column.
 
 ``` r
 sampling_trap <- sampling_trap_raw %>% 
@@ -277,7 +281,6 @@ tempDynamic <- sampling_trap_raw %>%
   spread_all()  %>% 
   as_tibble() %>% 
   select(-document.id)
-
 
 sampling_trap <- sampling_trap %>% 
   left_join(tempDynamic,
@@ -292,8 +295,16 @@ the field), and the biomass of the sample (as wet weight in grams). The
 samples are weighed in the bottles (gross weight), after a standardized
 draining of preservation liquid, and the bottle weights (calculated from
 a sample of 10 empty similar bottles) are subtracted, to get the net wet
-weight. For a few samples, especially in the starting year, the ethanol
-measurement and/or sample weights are missing.
+weight. Note that for the window traps, the collected biomass is too
+small to measure precisely, and they should be interpreted with caution.
+For example, the variation in (empty) bottle weights can be larger than
+the catches, resulting in negative values for net_wet_weight. From 2021
+and onwards, the 4 window traps are combined before further prossessing,
+so the (total weight) and catches are only reported for one of the
+traps. Trap catches should therefore be summed for the window traps,
+within locality_samplings. Also note that the ethanol measurement and/or
+sample weights are missing for a few samples, by lab routine mistakes,
+particularly for the starting year.
 
 Here is a sample of the extracted columns, added to the rest of the
 data:
@@ -347,8 +358,24 @@ The semi-natural sites typically have only 1 sampling trap per locality
 sampling, but forest habitats have an additional 4 window traps within
 each locality sampling, thus sharing the same locality sampling
 information. This level contains information of sampling period and (an
-aggregate of the ) local weather-data for the sampling period, collected
+aggregate of the) local weather data for the sampling period, collected
 from loggers on the malaisetrap.
+
+You may note that some locality samplings are missing starting and end
+times. The bulk of these are planned activity for 2023, which hadn’t
+been performed yet at the time of export to GBIF. In addition, some
+locality sampling events of past years have been skipped or missed, and
+are not connected to any observational data. One reason for skipping
+sampling numbers is that some localities were started early, and this
+was later corrected so that the dates and sample numbers would line up
+across localities. Including these “ghost” sampling events is a mistake
+in the export, and they will be eliminated in later dataset versions.
+
+Lastly, there are 15 “true” missing values for start and end dates. This
+pertains to the region “Østlandet/Ost” for the sampling numbers 3 and 4
+in the localites Semi-nat_17, Semi-nat_18, Semi-nat_19, Semi-nat_20,
+Skog_12, Skog_15, Skog_16, and Skog_20. These will be found and amended,
+after control of the stored physical samples.
 
 ``` r
 locality_sampling <- locality_sampling_raw %>% 
@@ -362,7 +389,6 @@ tempDynamic <- locality_sampling_raw %>%
   as_tibble() %>% 
   select(-document.id)
 
-
 locality_sampling <- locality_sampling %>% 
   left_join(tempDynamic,
             by = c("id" = "id"))
@@ -370,10 +396,11 @@ locality_sampling <- locality_sampling %>%
 if(!nrow(locality_sampling) == nrow(locality_sampling_raw) & nrow(locality_sampling) == nrow(tempDynamic)) stop("Locality sampling rows don't match!")
 ```
 
-The GBIF format has a single column for event time, where we have stored
-both the start and the end times. These need to be split into separate
-columns. Note that the sampling times are recorded as whole days, and
-the hours are implicitly set to midnight (in UTC + 2hrs).
+The GBIF format has one single column for event time, where we have
+stored both the start and the end times of the samplings. These need to
+be split into separate columns. Note that the sampling times are
+recorded as whole days, and the hours are implicitly set to midnight (in
+UTC + 2hrs).
 
 ``` r
 locality_sampling <- locality_sampling %>% 
@@ -382,7 +409,6 @@ locality_sampling <- locality_sampling %>%
            sep = "/") %>% 
   mutate(start_time = as.POSIXct(start_time),
          end_time = as.POSIXct(end_time))
-
 
 locality_sampling %>% 
   select(start_time,
@@ -446,16 +472,17 @@ locality_sampling <- locality_sampling %>%
 Lastly, the year-locality level hold the information that is associated
 with a whole sampling season for a locality. This includes information
 on the locality such as name, habitat type, and geographical region. In
-addition, we include ANO-id (areal representative nature survey), and a
+addition, we include ANO-id (areal representative nature survey) and a
 selection of the associated flora characteristics, as well as selection
-of the measured forest characteristics, in forest habitat.
+of the measured forest characteristics in forest habitat.
 
-This level also contains the GBIF darwinCore “locality” column, which is
-the nearest population center. We here rename this column to
+This level also contains the mandatory darwinCore “locality” column,
+which is the nearest population center. We here rename this column to
 locality_vernacular_name to is won’t clash with our own locality codes,
 stored in the dynamicProperties. We also reformat the SSB-ids (the
 500x500 square IDs from the Central statistical bureau) to character
-format.
+format. These codes can be used to merged the data with various national
+statistics (not shown here).
 
 ``` r
 year_locality <- year_locality_raw %>% 
@@ -478,7 +505,7 @@ year_locality <- year_locality %>%
 if(!nrow(year_locality) == nrow(year_locality_raw) & nrow(year_locality) == nrow(tempDynamic)) stop("Year locality rows don't match!")
 ```
 
-This level also contains sample time, here meaning the timespan of the
+This level also contains sample time, here meaning the time span of the
 whole sampling season. This can be split into start and end-times as
 with the locality samplings.
 
@@ -576,13 +603,14 @@ year_locality <- year_locality %>%
 
 ## The occurrence table
 
-The occurrence table holds the information about the observed species,
-and can be linked to the accompaning data through the identification
-table. First, we rename some columns from the GBIF standard. Note that
-I’ve been informed that these taxonID-data refer to scientific name ids
-(used by the norwegian species information center), and not taxon-ids
-used by GBIF. I therefore correct the naming here. These data might
-change in the future, adopting the gbif taxonIDs.
+We have now come to the occurrence table, which holds the data on the
+actual species observations. This table can be linked to the accompaning
+data through the identification table. First, we rename some columns
+from the GBIF standard. Note that I’ve been informed that these
+taxonID-data refer to “scientific name ids” (used by the norwegian
+species information center), and not proper “taxon-ids” used by GBIF. I
+therefore correct the naming here. These data might change in the
+future, adopting the gbif taxonIDs.
 
 ``` r
 occurrence <- occurrence_raw %>% 
@@ -602,14 +630,14 @@ occurrence <- occurrence_raw %>%
 
 ## Merging and using
 
-At this point, the data is normalized as far as we get, and ready to be
-used or reformatted in whatever form you choose. For example, the
-separate tables could be put into a database, and later joined together
-by their respective ids, potentially in permanent database views. The
-ids and qualitative values could optionally be constrained through
-foreign keys, but this should not be needed.
+At this point, the data is (mostly) normalized, and ready to be used or
+reformatted in whatever form you choose. For example, the separate
+tables could be put into a database, and later joined together by their
+respective ids, potentially in permanent database views. The ids and
+qualitative values could optionally be constrained through foreign keys,
+but this should not be needed.
 
-Alternatively, we could continue in for example R, and join them
+Alternatively, we could continue in for example R, and join the tables
 together manually. By the naming conventions used, this should be
 self-explanatory but even so, here is a table outlining the tables and
 the columns that can be used to join them together.
@@ -654,8 +682,8 @@ knitr::kable(key_table)
 
 ## Write the data to disk
 
-This is optional and trivial but shown for completeness. Here we place
-the tables in separate csv files.
+This is trivial but shown for completeness. Here we place the tables in
+separate csv files.
 
 ``` r
 system("mkdir -p 'out'")
@@ -674,14 +702,15 @@ write_csv(year_locality,
 
 ## Usage examples
 
-As an example, we will here join together and perform some summary
-figures.
+To exemplify the usage, we will here join together and perform a few
+simple summary figures.
 
 ### Within season biomass trends
 
 We here join the sampling trap, locality sampling and year_locality
-together. We will only consider malaisetrap catches so standardize the
-catch effort between habitat types. Also we discard the start
+together (we don’t need the identification and occurrence tables). We
+will only consider malaisetrap catches to standardize the catch effort
+between habitat types.
 
 ``` r
 biomass_join <- sampling_trap %>% 
@@ -694,8 +723,8 @@ biomass_join <- sampling_trap %>%
          year = forcats::as_factor(year))
 ```
 
-And plot a raw phenology plot of the biomass throughout the season,
-meaured at collection time.
+And a simple phenology plot of the biomass throughout the season,
+measured at collection time.
 
 ``` r
 ggplot(aes(y = net_wet_weight, 
@@ -721,6 +750,10 @@ ggplot(aes(y = net_wet_weight,
 
 ### Species richness per locality
 
+We here join also the occurrence table through the identification table,
+to link observations to localities. Again, we only show malaisetraps to
+keep the comparison valid between habitat types.
+
 ``` r
 spec_join <- occurrence %>% 
   left_join(identifications,
@@ -736,7 +769,8 @@ spec_join <- occurrence %>%
          year = forcats::as_factor(year))
 ```
 
-We can summarize this to get a more manageable table.
+We can summarize this as the total number of distinct species in a
+locality, year, and habitat type to get a more manageable table.
 
 ``` r
 spec_agg <- spec_join %>% 
@@ -750,10 +784,10 @@ spec_agg <- spec_join %>%
     `summarise()` has grouped output by 'year', 'region_name', 'locality'. You can
     override using the `.groups` argument.
 
-And create a basic plot of the total number of species found, divided by
-habitat type, region, and year. Note that we only export species names
-with identification confidence = “HIGH” to GBIF. See the reports for
-documentation of identification classifications.
+We then create a basic plot of the total number of species found,
+divided by habitat type, region, and year. Note that we only export
+species names with identification confidence = “HIGH” to GBIF. See the
+reports for documentation of identification classifications.
 
 ``` r
 ggplot(aes(y = no_spec,
