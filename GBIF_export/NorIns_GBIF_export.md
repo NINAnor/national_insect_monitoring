@@ -1,7 +1,6 @@
-GBIF data export from the Norwegian insect monitoring program (NorIns)
-================
+# GBIF data export from the Norwegian insect monitoring program (NorIns)
 Jens Åström
-9/12/23
+2025-09-15
 
 ``` r
 suppressPackageStartupMessages({
@@ -83,9 +82,10 @@ gbif_citation <- meta$eml$additionalMetadata$metadata$gbif$citation[[1]] # extra
 
 The citation to use is then:
 
-- Åström J (2023). National insect monitoring in Norway. Version 1.9.
-  Norwegian Institute for Nature Research. Sampling event dataset
-  https://doi.org/10.15468/2jwnc6 accessed via GBIF.org on 2023-09-12.
+- Åström J, Davey M (2025). National insect monitoring in Norway.
+  Version 1.13. Norwegian Institute for Nature Research. Sampling event
+  dataset https://doi.org/10.15468/2jwnc6 accessed via GBIF.org on
+  2025-09-15.
 
 ## Fetching the raw-data from GBIF
 
@@ -119,16 +119,14 @@ unzip("GBIF_data/gbif_download.zip",
       exdir = "GBIF_data")
 ```
 
-### Read in the raw GBIF files
-
-The data is a simple tab delimited text file.
-
 ``` r
 event_raw <- read_delim("GBIF_data/event.txt", 
                        delim = "\t",
                        locale = locale(encoding = "UTF-8"),
                        progress = FALSE,
-                       show_col_types = FALSE)
+                       show_col_types = FALSE,
+                       guess_max = 10000
+                       )
 ```
 
 The occurrence data follows the same procedure.
@@ -138,7 +136,8 @@ occurrence_raw <- read_delim("GBIF_data/occurrence.txt",
                        delim = "\t",
                        locale = locale(encoding = "UTF-8"),
                        progress = FALSE,
-                       show_col_types = FALSE
+                       show_col_types = FALSE,
+                       guess_max = 10000
                        )
 ```
 
@@ -183,7 +182,7 @@ identifications_raw %>%
     # A tibble: 1 × 1
       dynamicProperties                                                             
       <chr>                                                                         
-    1 "{\"id\":\"cc5c4506-d23c-4db4-be1c-cc1318c63ec5\",\"identification_name\":\"m…
+    1 "{\"id\":\"00006295-c4ca-49f0-9dc5-6f804f720d5b\",\"identification_name\":\"m…
 
 Here, we split out the json string (dynamicProperties) into a separate
 table, and join it back to the original data afterwards. I tried various
@@ -226,6 +225,7 @@ is a sample of the extracted columns, added to the rest of the data:
 
 ``` r
 identifications %>% 
+  #filter(!is.na(identification_name))
   select(identification_name,
          identification_comment,
          read_abundance,
@@ -237,14 +237,14 @@ identifications %>%
 
     # A tibble: 6 × 6
       identification_name   identification_comment read_abundance ekstraksjonsdato
-      <chr>                 <lgl>                           <dbl> <lgl>           
-    1 metabarcoding_novaseq NA                             556742 NA              
-    2 metabarcoding_novaseq NA                             390776 NA              
-    3 metabarcoding_novaseq NA                             249041 NA              
-    4 metabarcoding_myseq   NA                              31057 NA              
-    5 metabarcoding_myseq   NA                              83008 NA              
-    6 metabarcoding_novaseq NA                            3557357 NA              
-    # ℹ 2 more variables: ekstraksjonskit <lgl>, ekstraksjonskommentar <lgl>
+      <chr>                 <lgl>                           <dbl> <chr>           
+    1 metabarcoding_novaseq NA                             252740 <NA>            
+    2 metabarcoding_miseq   NA                             105652 <NA>            
+    3 metabarcoding_novaseq NA                             438593 <NA>            
+    4 metabarcoding_novaseq NA                              19211 <NA>            
+    5 metabarcoding_novaseq NA                             353772 <NA>            
+    6 metabarcoding_miseq   NA                              70684 <NA>            
+    # ℹ 2 more variables: ekstraksjonskit <chr>, ekstraksjonskommentar <chr>
 
 We here also remove some mandatory darwinCore-columns that are not
 particularly relevant for this level. We also rename the parentEventID
@@ -322,12 +322,12 @@ sampling_trap %>%
     # A tibble: 6 × 5
       trap_type trap_model            liquid_name  ethanol_prc_at_lab net_wet_weight
       <chr>     <chr>                 <chr>                     <dbl>          <dbl>
-    1 Window    Window_NMBU_2021      PropGl70_Et…               NA             3.49
-    2 Window    Window_NMBU_2021      PropGl70_Et…               72.8           2.29
-    3 Window    Window_NMBU_2021      PropGl70_Et…               55.0           7.68
-    4 Malaise   Malaise_Watkins_Black EtOH96                     NA            NA   
-    5 Window    Window_NMBU_2021      PropGl70_Et…               78            NA   
-    6 Malaise   Malaise_Watkins_Black EtOH96                     92.5          38.3 
+    1 Malaise   Malaise_Watkins_Black EtOH96                       95           1.44
+    2 Malaise   Malaise_Watkins_Black EtOH96                       88         113.  
+    3 Malaise   Malaise_Watkins_Black EtOH96                       93          39.0 
+    4 Malaise   Malaise_Watkins_Black EtOH96                       95          16.7 
+    5 Malaise   Malaise_Watkins_Black EtOH96                       95           5.08
+    6 Window    Window_NMBU_2020      PropGl70_Et…                 NA           3.07
 
 Lastly, we strip away some (for most people) superfluous columns.
 
@@ -415,20 +415,20 @@ locality_sampling %>%
          end_time)
 ```
 
-    # A tibble: 986 × 2
+    # A tibble: 2,206 × 2
        start_time          end_time           
        <dttm>              <dttm>             
-     1 2022-07-06 02:00:00 2022-07-21 02:00:00
-     2 2022-09-26 02:00:00 2022-10-08 02:00:00
-     3 2021-07-16 02:00:00 2021-07-27 02:00:00
-     4 2022-08-10 02:00:00 2022-08-22 02:00:00
-     5 2022-09-26 02:00:00 2022-10-11 02:00:00
-     6 2020-06-24 02:00:00 2020-07-07 02:00:00
-     7 2022-07-22 02:00:00 2022-08-04 02:00:00
-     8 NA                  NA                 
-     9 2020-07-22 02:00:00 2020-08-05 02:00:00
-    10 NA                  NA                 
-    # ℹ 976 more rows
+     1 2020-06-08 02:00:00 2020-06-24 02:00:00
+     2 2020-08-05 02:00:00 2020-08-19 02:00:00
+     3 2020-07-21 02:00:00 2020-08-18 02:00:00
+     4 2021-06-30 02:00:00 2021-07-14 02:00:00
+     5 2020-07-21 02:00:00 2020-08-18 02:00:00
+     6 2021-07-16 02:00:00 2021-07-28 02:00:00
+     7 2021-06-26 02:00:00 2021-07-15 02:00:00
+     8 2020-06-26 02:00:00 2020-07-07 02:00:00
+     9 2020-06-10 02:00:00 2020-06-25 02:00:00
+    10 2020-06-23 02:00:00 2020-07-21 02:00:00
+    # ℹ 2,196 more rows
 
 ``` r
 locality_sampling %>% 
@@ -443,12 +443,12 @@ locality_sampling %>%
     # A tibble: 6 × 5
       start_time          end_time            sampling_min_temp sampling_max_temp
       <dttm>              <dttm>                          <dbl>             <dbl>
-    1 2022-07-06 02:00:00 2022-07-21 02:00:00             -1.92              36.1
-    2 2022-09-26 02:00:00 2022-10-08 02:00:00             -0.84              34.6
-    3 2021-07-16 02:00:00 2021-07-27 02:00:00             -3.67              35.2
-    4 2022-08-10 02:00:00 2022-08-22 02:00:00             -2.77              34.3
-    5 2022-09-26 02:00:00 2022-10-11 02:00:00             -5.52              31.4
-    6 2020-06-24 02:00:00 2020-07-07 02:00:00             -1.85              33.6
+    1 2020-06-08 02:00:00 2020-06-24 02:00:00             -2.61              35.5
+    2 2020-08-05 02:00:00 2020-08-19 02:00:00             -1.94              32.7
+    3 2020-07-21 02:00:00 2020-08-18 02:00:00             -7.63              35.7
+    4 2021-06-30 02:00:00 2021-07-14 02:00:00             -0.87              39.2
+    5 2020-07-21 02:00:00 2020-08-18 02:00:00             -9.24              36.5
+    6 2021-07-16 02:00:00 2021-07-28 02:00:00             NA                 NA  
     # ℹ 1 more variable: sampling_avg_temp <dbl>
 
 Finally, trimming away some columns.
@@ -523,20 +523,20 @@ year_locality %>%
          end_time)
 ```
 
-    # A tibble: 100 × 2
+    # A tibble: 200 × 2
        start_time             end_time              
        <chr>                  <chr>                 
-     1 2022-06-10 02:00:00+02 2022-10-20 02:00:00+02
-     2 2020-05-27 02:00:00+02 2020-09-14 02:00:00+02
-     3 2020-05-12 02:00:00+02 2020-09-18 02:00:00+02
-     4 <NA>                   <NA>                  
-     5 <NA>                   <NA>                  
-     6 2020-05-11 02:00:00+02 2020-09-16 02:00:00+02
-     7 2022-05-12 02:00:00+02 2022-10-14 02:00:00+02
-     8 2020-05-14 02:00:00+02 2020-09-15 02:00:00+02
-     9 2022-06-09 02:00:00+02 2022-10-21 02:00:00+02
-    10 2021-06-21 02:00:00+02 2021-10-06 02:00:00+02
-    # ℹ 90 more rows
+     1 2024-04-23 02:00:00+02 2024-10-18 02:00:00+02
+     2 2020-06-24 02:00:00+02 2020-09-15 02:00:00+02
+     3 2021-06-10 02:00:00+02 2021-10-13 02:00:00+02
+     4 2024-04-24 02:00:00+02 2024-10-17 02:00:00+02
+     5 2022-06-09 02:00:00+02 2022-10-21 02:00:00+02
+     6 2022-05-12 02:00:00+02 2022-10-14 02:00:00+02
+     7 2022-05-24 02:00:00+02 2022-10-18 02:00:00+02
+     8 2021-06-22 02:00:00+02 2021-10-13 02:00:00+02
+     9 2023-05-11 02:00:00+02 2023-10-18 02:00:00+02
+    10 2022-06-09 02:00:00+02 2022-10-21 02:00:00+02
+    # ℹ 190 more rows
 
 Here is a sample of the data at the year locality level. If some
 starting and end times are missing, these can be inferred (will be fixed
@@ -562,14 +562,14 @@ year_locality %>%
 ```
 
     # A tibble: 6 × 13
-      season_start_time   season_end_time     locality     year habitat_type
-      <dttm>              <dttm>              <chr>       <dbl> <chr>       
-    1 2022-06-10 02:00:00 2022-10-20 02:00:00 Semi-nat_50  2022 Semi-nat    
-    2 2020-05-27 02:00:00 2020-09-14 02:00:00 Semi-nat_04  2020 Semi-nat    
-    3 2020-05-12 02:00:00 2020-09-18 02:00:00 Skog_03      2020 Forest      
-    4 NA                  NA                  Semi-nat_66  2023 Semi-nat    
-    5 NA                  NA                  Semi-nat_69  2023 Semi-nat    
-    6 2020-05-11 02:00:00 2020-09-16 02:00:00 Semi-nat_09  2020 Semi-nat    
+      season_start_time   season_end_time     locality      year habitat_type
+      <dttm>              <dttm>              <chr>        <dbl> <chr>       
+    1 2024-04-23 02:00:00 2024-10-18 02:00:00 Semi-nat_133  2024 Semi-nat    
+    2 2020-06-24 02:00:00 2020-09-15 02:00:00 Semi-nat_07   2020 Semi-nat    
+    3 2021-06-10 02:00:00 2021-10-13 02:00:00 Skog_12       2021 Forest      
+    4 2024-04-24 02:00:00 2024-10-17 02:00:00 Semi-nat_114  2024 Semi-nat    
+    5 2022-06-09 02:00:00 2022-10-21 02:00:00 Semi-nat_45   2022 Semi-nat    
+    6 2022-05-12 02:00:00 2022-10-14 02:00:00 Semi-nat_39   2022 Semi-nat    
     # ℹ 8 more variables: region_name <chr>, ssbid <chr>, ano_flate_id <chr>,
     #   no_herb_spec <dbl>, avg_prc_cov_herb_species <dbl>, no_tree_spec <dbl>,
     #   dom_tree_spec <chr>, avg_dom_tree_age <dbl>
@@ -680,6 +680,26 @@ knitr::kable(key_table)
 | locality_sampling | locality_sampling_id | year_locality_id     | year_locality     | year_locality_id      |
 | year_locality     | year_locality_id     |                      |                   |                       |
 
+## Summarize data amount
+
+``` r
+data_summary <- tibble("Occurrence" = nrow(occurrence),
+                       "Identifications" = nrow(identifications),
+                       "Sampling_trap" = nrow(sampling_trap),
+                       "Locality_sampling" = nrow(locality_sampling),
+                       "Year_locality" = nrow(year_locality))
+
+
+knitr::kable(data_summary,
+             caption = "Number of rows for each table")
+```
+
+| Occurrence | Identifications | Sampling_trap | Locality_sampling | Year_locality |
+|-----------:|----------------:|--------------:|------------------:|--------------:|
+|    1016626 |            2651 |          4203 |              2206 |           200 |
+
+Number of rows for each table
+
 ## Write the data to disk
 
 This is trivial but shown for completeness. Here we place the tables in
@@ -742,11 +762,13 @@ ggplot(aes(y = net_wet_weight,
 
     `geom_smooth()` using method = 'loess' and formula = 'y ~ x'
 
-    Warning: Removed 269 rows containing non-finite values (`stat_smooth()`).
+    Warning: Removed 262 rows containing non-finite outside the scale range
+    (`stat_smooth()`).
 
-    Warning: Removed 269 rows containing missing values (`geom_point()`).
+    Warning: Removed 262 rows containing missing values or values outside the scale range
+    (`geom_point()`).
 
-![](figure/unnamed-chunk-28-1.png)
+![](figure/unnamed-chunk-29-1.png)
 
 ### Species richness per locality
 
@@ -807,6 +829,6 @@ ggplot(aes(y = no_spec,
     Warning: The `show_guide` argument of `layer()` is deprecated as of ggplot2 2.0.0.
     ℹ Please use the `show.legend` argument instead.
 
-![](figure/unnamed-chunk-31-1.png)
+![](figure/unnamed-chunk-32-1.png)
 
 This concludes the tour of the basic wrangling of this dataset.

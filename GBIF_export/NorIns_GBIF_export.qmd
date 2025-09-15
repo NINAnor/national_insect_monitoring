@@ -86,7 +86,7 @@ The endpoint for our dataset looks like this: (Also visible on the webpage for t
 
 With the endpoint, we can download the data in a zipped format.
 ```{r}
-#| eval: false
+#| eval: true
 # Download from dwc-a from IPT  putting into data folder
 system("mkdir -p GBIF_data")
 download.file(endpoint_url, destfile = "GBIF_data/gbif_download.zip", mode="wb")
@@ -94,15 +94,11 @@ download.file(endpoint_url, destfile = "GBIF_data/gbif_download.zip", mode="wb")
 ```
 We unzip it in the same folder.
 ```{r}
-#| eval: false
+#| eval: true
 unzip("GBIF_data/gbif_download.zip",
       exdir = "GBIF_data")
 ```
 
-
-### Read in the raw GBIF files
-
-The data is a simple tab delimited text file. 
 
 ```{r}
 #| eval: true
@@ -110,7 +106,9 @@ event_raw <- read_delim("GBIF_data/event.txt",
                        delim = "\t",
                        locale = locale(encoding = "UTF-8"),
                        progress = FALSE,
-                       show_col_types = FALSE)
+                       show_col_types = FALSE,
+                       guess_max = 10000
+                       )
 ```
 
 The occurrence data follows the same procedure.
@@ -120,7 +118,8 @@ occurrence_raw <- read_delim("GBIF_data/occurrence.txt",
                        delim = "\t",
                        locale = locale(encoding = "UTF-8"),
                        progress = FALSE,
-                       show_col_types = FALSE
+                       show_col_types = FALSE,
+                       guess_max = 10000
                        )
 
 ```
@@ -189,6 +188,7 @@ if(!nrow(identifications) == nrow(identifications_raw) & nrow(identifications) =
 The new columns contain an identification method name, optional identification comment, read_abundance (number of DNA-copies), extraction date, extraction-kit, and optional extraction comment. Here is a sample of the extracted columns, added to the rest of the data:
 ```{r}
 identifications %>% 
+  #filter(!is.na(identification_name))
   select(identification_name,
          identification_comment,
          read_abundance,
@@ -492,6 +492,26 @@ key_table <- tibble("Table" = c("occurrence",
 
 knitr::kable(key_table)
 ```
+
+
+## Summarize data amount
+
+```{r}
+data_summary <- tibble("Occurrence" = nrow(occurrence),
+                       "Identifications" = nrow(identifications),
+                       "Sampling_trap" = nrow(sampling_trap),
+                       "Locality_sampling" = nrow(locality_sampling),
+                       "Year_locality" = nrow(year_locality))
+
+
+knitr::kable(data_summary,
+             caption = "Number of rows for each table")
+
+
+```
+
+
+
 
 ## Write the data to disk
 
